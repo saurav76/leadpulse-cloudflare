@@ -27,13 +27,13 @@ assert.equal(state.preview, true, 'Preview-only mode must be enabled');
 assert.equal(state.checkout_enabled, false, 'Checkout must remain unavailable');
 console.log('PASS /health: D1 OK, preview only, checkout off');
 
-for(const route of ['/', '/pricing', '/help', '/privacy', '/terms']) {
+for(const route of ['/', '/pricing', '/help', '/privacy', '/terms', '/contact-form-monitoring', '/agency-form-monitoring', '/guides/form-visibility-checklist']) {
   const r = await request(route);
   assert.equal(r.status, 200, `${route} should load`);
   assert.match(await r.text(), /LeadPulse/i, `${route} should render LeadPulse`);
   console.log(`PASS ${route}: HTTP 200`);
 }
-for(const route of ['/signup', '/dashboard', '/billing', '/login', '/sites/add']) {
+for(const route of ['/signup', '/dashboard', '/billing', '/login', '/sites/add', '/forgot-password', '/admin']) {
   const r = await request(route);
   assert.equal(r.status, 404, `${route} must be disabled in preview`);
   console.log(`PASS ${route}: blocked (404)`);
@@ -49,3 +49,10 @@ const favicon = await request('/favicon.svg');
 assert.equal(favicon.status, 200, 'Favicon must load');
 console.log('PASS /favicon.svg');
 console.log('Live preview HTTP smoke test passed:',base);
+
+const sitemap = await request('/sitemap.xml');
+assert.equal(sitemap.status,200,'Sitemap must be publicly reachable');
+const sitemapBody=await sitemap.text();
+assert.match(sitemapBody,/contact-form-monitoring/);
+assert.doesNotMatch(sitemapBody,/<loc>[^<]*\/signup<\/loc>/);
+console.log('PASS /sitemap.xml: marketing pages only');

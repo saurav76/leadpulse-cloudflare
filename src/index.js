@@ -1,5 +1,5 @@
 import {PLANS,now,addDays,randToken,sha256,hashPassword,verifyPassword,htmlEscape as e,validEmail,publicUrl,accessValid,planLimit,csrfValid,getCookie,cookie,safeSelector} from './lib.js';
-import {layout,home,pricing,formPage,dashboard,sitePage} from './web.js';
+import {layout,home,pricing,formPage,dashboard,sitePage,marketingPage,MARKETING_PATHS} from './web.js';
 import {verifyOwnership,checkOne,scheduledCheck,sendEmail} from './monitor.js';
 import {safeAttribution,safeCampaign,tryTrackActivity,isAdminAuthorized,adminDenied,readCustomerOverview,renderGrowthPage} from './growth.js';
 import {verifyEmailMessage,welcomeEmailMessage} from './emailTemplates.js';
@@ -106,7 +106,7 @@ async function doPost(req,env,pathname,user){const f=await form(req);checkPOST(r
 async function serve(req,env){
  const u=new URL(req.url),path=u.pathname;
  // Limit all dynamic routes when running a free-tier static preview.
- if(env.PREVIEW_ONLY==='true'&&!['/','/pricing','/help','/privacy','/terms','/health','/robots.txt','/styles.css','/favicon.svg','/admin'].includes(path))return notFound(true);
+ if(env.PREVIEW_ONLY==='true'&&!['/','/pricing','/help','/privacy','/terms','/health','/robots.txt','/sitemap.xml','/styles.css','/favicon.svg','/admin',...MARKETING_PATHS].includes(path))return notFound(true);
  if(path==='/styles.css'||path==='/favicon.svg')return env.ASSETS.fetch(req);
  if(path==='/admin'){
    const configured=typeof env.ADMIN_DASHBOARD_PASSWORD==='string'&&env.ADMIN_DASHBOARD_PASSWORD.length>=24;
@@ -123,12 +123,18 @@ async function serve(req,env){
    let db='unavailable';try{await env.DB.prepare('SELECT 1').first();db='ok';}catch{}
    return new Response(JSON.stringify({service:'leadpulse',database:db,preview:env.PREVIEW_ONLY==='true',checkout_enabled:false}),{status:db==='ok'?200:503,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});
  }
- if(path==='/robots.txt')return new Response('User-agent: *\nDisallow: /dashboard\nDisallow: /sites/\nDisallow: /billing\n',{headers:{'Content-Type':'text/plain'}});
+ if(path==='/robots.txt')return new Response('User-agent: *\\nDisallow: /admin\\nDisallow: /dashboard\\nDisallow: /sites/\\nDisallow: /billing\\nDisallow: /signup\\nDisallow: /login\\nSitemap: https://leadpulse-saas.sauravbasu76.workers.dev/sitemap.xml\\n',{headers:{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'public, max-age=3600'}});
+ if(path==='/sitemap.xml'){
+  const routes=['/','/pricing','/help','/contact-form-monitoring','/agency-form-monitoring','/guides/form-visibility-checklist'];
+  const body='<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'+routes.map(p=>'<url><loc>https://leadpulse-saas.sauravbasu76.workers.dev'+p+'</loc></url>').join('')+'</urlset>';
+  return new Response(body,{headers:{'Content-Type':'application/xml; charset=utf-8','Cache-Control':'public, max-age=3600'}});
+ }
  const user=env.PREVIEW_ONLY==='true'?null:await sessionUser(req,env);
  if(req.method==='POST')return doPost(req,env,path,user);
  if(req.method!=='GET')return response('Method not allowed',405);
  if(path==='/')return makePage(req,env,'Know when forms break',home(env.PREVIEW_ONLY==='true'),user);
  if(path==='/pricing')return makePage(req,env,'Pricing',pricing(),user);
+ if(MARKETING_PATHS.includes(path))return makePage(req,env,path==='/agency-form-monitoring'?'Agency form monitoring':path==='/contact-form-monitoring'?'Contact form monitoring':'Form visibility checklist',marketingPage(path),user);
  if(path==='/help')return makePage(req,env,'Help',formPage('How LeadPulse works','<p>LeadPulse checks the visible state of forms on authorized HTTPS websites. Owners must place a verification tag on their domain. Checks do not prove the form delivered an email. Support contact will be published before account registration opens.</p>'),user);
  if(path==='/privacy')return makePage(req,env,'Privacy',formPage('Privacy notice — draft','<p>LeadPulse stores account email addresses, hashed passwords, authorized site URLs, site verification status and check history in a Cloudflare D1 database. Email services and browser checks may process data as part of service delivery. Data retention, contact details and applicable legal obligations will be finalized before public signup.</p>'),user);
  if(path==='/terms')return makePage(req,env,'Terms',formPage('Terms — draft','<p>By requesting monitoring, you represent that you control or are expressly authorized to test the target website. The current preview does not offer uptime guarantees, checkout, or commercial service. Final legal terms and refund policies will be published before paid enrollment.</p>'),user);

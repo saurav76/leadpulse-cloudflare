@@ -14,3 +14,6 @@ test('static asset served by assets binding',async()=>assert.equal((await fetchP
 test('admin analytics stays closed without password secret',async()=>{assert.equal((await fetchPath('/admin')).status,404);});
 
 test('password recovery routes remain closed in preview',async()=>{assert.equal((await fetchPath('/forgot-password')).status,404);assert.equal((await fetchPath('/reset-password')).status,404);});
+
+test('marketing pages are public and accurately scoped',async()=>{for(const p of ['/contact-form-monitoring','/agency-form-monitoring','/guides/form-visibility-checklist']) {const r=await fetchPath(p);assert.equal(r.status,200);assert.match(await r.text(),/LeadPulse|form/i);}});
+test('sitemap includes marketing content and omits signup checkout',async()=>{const r=await fetchPath('/sitemap.xml');assert.equal(r.status,200);const s=await r.text();assert.match(s,/agency-form-monitoring/);assert.doesNotMatch(s,/<loc>[^<]*\/signup<\/loc>/);});
