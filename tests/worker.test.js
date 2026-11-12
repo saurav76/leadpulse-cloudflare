@@ -10,3 +10,5 @@ test('dashboard is closed in preview',async()=>assert.equal((await fetchPath('/d
 test('billing is closed in preview',async()=>assert.equal((await fetchPath('/billing')).status,404));
 test('preview health checks bound database',async()=>{const r=await fetchPath('/health');assert.equal(r.status,200);const d=await r.json();assert.equal(d.preview,true);assert.equal(d.checkout_enabled,false);});
 test('static asset served by assets binding',async()=>assert.equal((await fetchPath('/styles.css')).status,200));
+
+test('admin analytics stays closed without password secret',async()=>{assert.equal((await fetchPath('/admin')).status,404);});

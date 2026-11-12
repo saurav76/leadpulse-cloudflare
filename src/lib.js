@@ -16,11 +16,11 @@ export function publicUrl(raw) {
 }
 export function accessValid(user, at = new Date()) {
  if (!user || !user.verified) return false;
- if (user.billing_status==='prepaid' && user.paid_until) return new Date(user.paid_until)>at;
+ if (user.billing_status==='prepaid' && user.paid_verified_at && ['solo','studio','agency'].includes(user.plan) && user.paid_until) return new Date(user.paid_until)>at;
  if (user.billing_status==='trial' && user.trial_until) return new Date(user.trial_until)>at;
  return false;
 }
-export function planLimit(user) {return PLANS[user?.plan] || 1;}
+export function planLimit(user) {return user?.billing_status==='prepaid' && user?.paid_verified_at ? (PLANS[user?.plan]||1) : 1;}
 export function safeSelector(x) { const s=String(x||'form').trim(); if (!s || s.length>150 || /[\x00-\x1f]/.test(s)) throw Error('Invalid selector'); return s; }
 export function base64url(bytes) {return btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 export function randToken(bytes=32) {return base64url(crypto.getRandomValues(new Uint8Array(bytes)));}
