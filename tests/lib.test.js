@@ -1,0 +1,12 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {publicUrl,validEmail,htmlEscape,hashPassword,verifyPassword,accessValid,planLimit,csrfValid,constantTimeStringEq} from '../src/lib.js';
+import {verifyTagInHtml} from '../src/monitor.js';
+test('HTTPS external domain is accepted',()=>assert.equal(publicUrl('https://example.com/contact?q=1'),'https://example.com/contact'));
+for(const bad of ['http://example.com','https://127.0.0.1','https://localhost','https://192.168.0.2','https://[::1]','https://example.test','https://example.com:444','https://user:pass@example.com'])test('reject unsafe URL '+bad,()=>assert.throws(()=>publicUrl(bad)));
+test('no XSS in HTML interpolation',()=>assert.equal(htmlEscape('<script>"'), '&lt;script&gt;&quot;'));
+test('email validation',()=>{assert.equal(validEmail('a@company.com'),true);assert.equal(validEmail('notemail'),false);});
+test('password hashing correct and stable',async()=>{const h=await hashPassword('long-and-secure-password');assert.equal(await verifyPassword('long-and-secure-password',h.salt,h.hash),true);assert.equal(await verifyPassword('bad-password',h.salt,h.hash),false)});
+test('constant time comparison returns truth',()=>{assert.equal(constantTimeStringEq('foo','foo'),true);assert.equal(constantTimeStringEq('foo','bar'),false)});
+test('access restrictions',()=>{const u={verified:1,billing_status:'trial',trial_until:'2099-01-01',plan:'agency'};assert.equal(accessValid(u),true);assert.equal(planLimit(u),20);assert.equal(accessValid({...u,verified:0}),false);assert.equal(accessValid({...u,billing_status:'prepaid',paid_until:'2020-01-01'}),false);});
+test('form verification token must match',()=>{assert.equal(verifyTagInHtml('<meta content="abc" name="leadpulse-verification">','abc'),true);assert.equal(verifyTagInHtml('<meta name="leadpulse-verification" content="other">','abc'),false);});
+test('post requires same-origin plus CSRF',()=>{const r=new Request('https://leadpulse.workers.dev/signup',{headers:{origin:'https://leadpulse.workers.dev',cookie:'lp_csrf=abc123'}});assert.equal(csrfValid(r,'abc123'),true);assert.equal(csrfValid(r,'xyz'),false);});

@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "leadpulse-saas",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {"enabled": true},
+  "assets": {"directory": "./public", "binding": "ASSETS", "run_worker_first": ["/*"]},
+  "d1_databases": [
+    {"binding": "DB", "database_name": "leadpulse-db", "database_id": "REPLACE_WITH_D1_DATABASE_UUID", "migrations_dir": "migrations"}
+  ],
+  "browser": {"binding": "BROWSER"},
+  "triggers": {"crons": ["0 * * * *"]},
+  "vars": {
+    "PREVIEW_ONLY": "true",
+    "ENABLE_SIGNUPS": "false",
+    "ENABLE_MONITORING": "false",
+    "BILLING_ENABLED": "false",
+    "MAX_DAILY_BROWSER_MS": "300000",
+    "MONITOR_TIMEZONE": "UTC"
+  }
+}
