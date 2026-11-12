@@ -20,11 +20,32 @@ jobs:
           node-version: '22'
       - run: npm install --no-audit --no-fund
       - run: npm test
-      - name: Validate Cloudflare configuration
+      - name: Verify token and resolve Cloudflare account
         run: |
-          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Missing Cloudflare API token'; exit 1; }
-          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo 'Missing Cloudflare account ID'; exit 1; }
-          test -n "$LEADPULSE_D1_DATABASE_ID" || { echo 'Missing D1 UUID'; exit 1; }
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const token = process.env.CLOUDFLARE_API_TOKEN;
+          const database = process.env.LEADPULSE_D1_DATABASE_ID;
+          if (!token) throw new Error('Missing Actions secret CLOUDFLARE_API_TOKEN. Add a newly rotated scoped Cloudflare API Token in GitHub repository Settings.');
+          if (!/^[0-9a-fA-F-]{36}$/.test(database || '')) throw new Error('Missing or invalid LEADPULSE_D1_DATABASE_ID Actions variable.');
+          const auth = { Authorization: `Bearer ${token}` };
+          const verify = await fetch('https://api.cloudflare.com/client/v4/user/tokens/verify', { headers: auth });
+          const verified = await verify.json().catch(() => ({}));
+          if (!verify.ok || !verified.success) throw new Error(`Cloudflare bearer token verification failed (HTTP ${verify.status}); verify token type and validity.`);
+          let accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim();
+          if (!accountId) {
+            const response = await fetch('https://api.cloudflare.com/client/v4/accounts?per_page=50', { headers: auth });
+            const listing = await response.json().catch(() => ({}));
+            if (!response.ok || !listing.success) throw new Error(`Unable to identify Cloudflare account automatically (HTTP ${response.status}). Set CLOUDFLARE_ACCOUNT_ID as an Actions repository variable; the token may lack Account Settings Read permission.`);
+            if (!Array.isArray(listing.result) || listing.result.length !== 1) throw new Error('Cloudflare token does not resolve to exactly one account; set CLOUDFLARE_ACCOUNT_ID Actions variable for the intended account.');
+            accountId = listing.result[0].id;
+          }
+          if (!/^[0-9a-fA-F]{32}$/.test(accountId)) throw new Error('Invalid Cloudflare Account ID.');
+          fs.appendFileSync(process.env.GITHUB_ENV, `CLOUDFLARE_ACCOUNT_ID=${accountId}\n`);
+          console.log('Cloudflare bearer token verified and deployment account resolved.');
+          NODE
+      - name: Validate D1 migration target
+        run: |
           node --input-type=module -e 'import fs from "node:fs"; const p="wrangler.jsonc"; const x=fs.readFileSync(p,"utf8"); if(!x.includes("REPLACE_WITH_D1_DATABASE_UUID")) throw Error("Expected DB UUID placeholder absent"); fs.writeFileSync(p, x.replace("REPLACE_WITH_D1_DATABASE_UUID",process.env.LEADPULSE_D1_DATABASE_ID));'
       - name: Apply D1 migrations
         run: npx wrangler d1 migrations apply leadpulse-db --remote --yes
