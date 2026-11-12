@@ -2,9 +2,11 @@ import {PLANS,now,addDays,randToken,sha256,hashPassword,verifyPassword,htmlEscap
 import {layout,home,pricing,formPage,dashboard,sitePage} from './web.js';
 import {verifyOwnership,checkOne,scheduledCheck,sendEmail} from './monitor.js';
 import {safeAttribution,safeCampaign,tryTrackActivity,isAdminAuthorized,adminDenied,readCustomerOverview,renderGrowthPage} from './growth.js';
+import {verifyEmailMessage,welcomeEmailMessage} from './emailTemplates.js';
+import {requestPasswordReset,finishPasswordReset,recoveryAvailable} from './recovery.js';
 const MAX_FORM=12000;
 const CSP="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
-function response(body,status=200,headers={}) {const h=new Headers({'Content-Type':'text/html; charset=utf-8','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'strict-origin-when-cross-origin','Content-Security-Policy':CSP,'Strict-Transport-Security':'max-age=31536000','Cache-Control':'no-store'}); for(const [k,v] of new Headers(headers))h.append(k,v);return new Response(body,{status,headers:h});}
+function response(body,status=200,headers={}) {const h=new Headers({'Content-Type':'text/html; charset=utf-8','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Content-Security-Policy':CSP,'Strict-Transport-Security':'max-age=31536000','Cache-Control':'no-store'}); for(const [k,v] of new Headers(headers))h.append(k,v);return new Response(body,{status,headers:h});}
 function redirect(path,cookieHeaders){const h=new Headers({'Location':path,'Cache-Control':'no-store'});for(const item of cookieHeaders||[])h.append('Set-Cookie',item);return new Response(null,{status:303,headers:h});}
 function notFound(preview=true){return response(layout('Not found','<section class="inner page-intro"><h1>Page not found</h1><a href="/">Go home</a></section>',null,preview),404);}
 async function sessionUser(req,env){
@@ -17,14 +19,14 @@ async function form(req){const text=await req.text();if(text.length>MAX_FORM)thr
 function textField(f,k,max=500){return String(f.get(k)||'').trim().slice(0,max);}
 function setCSRF(req,headers){const existing=getCookie(req,'lp_csrf');const token=existing&&existing.length>=20&&existing.length<=128?existing:randToken(24);if(!existing)headers.append('Set-Cookie',cookie('lp_csrf',token,86400*7));return token;}
 async function makePage(req,env,title,body,user=null,flash=''){
- const headers=new Headers();setCSRF(req,headers);
- return response(layout(title,body,user,env.PREVIEW_ONLY==='true',flash),200,headers);
+ const headers=new Headers();const csrf=setCSRF(req,headers);
+ return response(layout(title,body,user,env.PREVIEW_ONLY==='true',flash,csrf),200,headers);
 }
 function checkPOST(req,f){if(!csrfValid(req,textField(f,'csrf',200)))throw Error('Session validation failed. Refresh and try again.');}
 function requireSession(user){if(!user)throw Error('Please log in.');}
 async function sendVerification(env,email,token){
- const link=`${env.PUBLIC_URL}/verify-email?token=${encodeURIComponent(token)}`;
- return sendEmail(env,email,'Verify your LeadPulse account',`Complete verification by opening this link within 24 hours:\n${link}\n\nIf you did not request an account, ignore this email.`);
+ const message=verifyEmailMessage(env.PUBLIC_URL,token);
+ return sendEmail(env,email,message.subject,message.text);
 }
 async function signup(req,env,f){
  if(env.PREVIEW_ONLY==='true'||env.ENABLE_SIGNUPS!=='true'||!env.RESEND_API_KEY||!env.EMAIL_FROM||!env.PUBLIC_URL)return response('Signup is not available until verified email delivery is configured.',503);
@@ -55,6 +57,11 @@ async function getSite(env,id,userId){return await env.DB.prepare('SELECT * FROM
 async function doPost(req,env,pathname,user){const f=await form(req);checkPOST(req,f);
  if(pathname==='/signup')return signup(req,env,f);
  if(pathname==='/login')return login(req,env,f);
+ if(pathname==='/forgot-password')return makePage(req,env,'Password reset',formPage('Check your email',`<p>${e(await requestPasswordReset(env,textField(f,'email',255)))}</p><p><a href="/login">Return to login</a></p>`));
+ if(pathname==='/reset-password'){
+   await finishPasswordReset(env,textField(f,'token',150),String(f.get('password')||''));
+   return redirect('/login?reset=1');
+ }
  if(pathname==='/logout'){
    const t=getCookie(req,'lp_session');if(t)await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(await sha256(t)).run();
    return redirect('/',[cookie('lp_session','',0,true)]);
@@ -131,9 +138,20 @@ async function serve(req,env){
    const html=formPage('Create an account',`<p>Seven-day trial. No card required.</p><form method="post" action="/signup"><input type="hidden" name="source" value="${e(source)}"><input type="hidden" name="campaign" value="${e(campaign)}"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required autocomplete="email"><label>Password</label><input name="password" type="password" minlength="12" required autocomplete="new-password"><button class="btn btn-dark full">Create account</button></form>`);
    const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Sign up',html,null,false),200,h);
  }
+ if(path==='/forgot-password'){
+   const token=getCookie(req,'lp_csrf')||randToken(24);
+   const html=formPage('Reset your password',`<p>Enter the email registered to your LeadPulse account. If eligible, you'll receive a 30-minute recovery link.</p><form action="/forgot-password" method="post"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required><button class="btn btn-dark full">Send reset link</button></form>`);
+   const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Password recovery',html,null,false),200,h);
+ }
+ if(path==='/reset-password'){
+   const token=getCookie(req,'lp_csrf')||randToken(24),key=u.searchParams.get('token')||'';
+   if(key.length<30||key.length>150)return response('Invalid or expired recovery link',400);
+   const html=formPage('Choose a new password',`<form action="/reset-password" method="post"><input type="hidden" name="csrf" value="${e(token)}"><input type="hidden" name="token" value="${e(key)}"><label>New password (12–128 characters)</label><input name="password" type="password" minlength="12" maxlength="128" required autocomplete="new-password"><button class="btn btn-dark full">Reset password</button></form>`);
+   const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Reset password',html,null,false),200,h);
+ }
  if(path==='/login'){
    const token=getCookie(req,'lp_csrf')||randToken(24);
-   const html=formPage('Sign in',`${u.searchParams.has('registered')?'<p>Account created. Verify your email, then sign in.</p>':''}<form method="post" action="/login"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required autocomplete="email"><label>Password</label><input name="password" type="password" required autocomplete="current-password"><button class="btn btn-dark full">Sign in</button></form>`);
+   const html=formPage('Sign in',`${u.searchParams.has('registered')?'<p>Account created. Verify your email, then sign in.</p>':''}<form method="post" action="/login"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required autocomplete="email"><label>Password</label><input name="password" type="password" required autocomplete="current-password"><button class="btn btn-dark full">Sign in</button></form><p><a href="/forgot-password">Forgot password?</a></p>`);
    const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Log in',html,null,false),200,h);
  }
  if(path==='/verify-email'){
@@ -142,17 +160,18 @@ async function serve(req,env){
    if(!row)return response('Link expired or invalid',400);
    await env.DB.prepare('UPDATE users SET verified=1,verify_token_hash=NULL,verify_expires_at=NULL WHERE id=?').bind(row.id).run();
    await tryTrackActivity(env,row.id,'email_verified');
+   if(recoveryAvailable(env)){const account=await env.DB.prepare('SELECT email FROM users WHERE id=?').bind(row.id).first();if(account?.email){const welcome=welcomeEmailMessage(env.PUBLIC_URL);await sendEmail(env,account.email,welcome.subject,welcome.text).catch(()=>{});}}
    return redirect('/login?verified=1');
  }
  if(path==='/dashboard'){
    requireSession(user);await tryTrackActivity(env,user.id,'dashboard_view');const sites=await getSites(env,user.id),token=getCookie(req,'lp_csrf')||randToken(24);
-   const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Dashboard',dashboard(user,sites,token),user,false),200,h);
+   const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Dashboard',dashboard(user,sites,token),user,false,'',token),200,h);
  }
  const m=path.match(/^\/sites\/(\d+)$/);
  if(m){requireSession(user);const site=await getSite(env,Number(m[1]),user.id);if(!site)return notFound(false);
   const rows=await env.DB.prepare('SELECT checked_at,status,detail FROM checks WHERE site_id=? AND user_id=? ORDER BY checked_at DESC LIMIT 30').bind(site.id,user.id).all();
   const token=getCookie(req,'lp_csrf')||randToken(24),h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));
-  return response(layout('Site detail',sitePage(site,rows.results||[],token,accessValid(user)),user,false),200,h);
+  return response(layout('Site detail',sitePage(site,rows.results||[],token,accessValid(user)),user,false,'',token),200,h);
  }
  if(path.startsWith('/billing'))return response('Payments are not active. No charges can be made.',503);
  return notFound(env.PREVIEW_ONLY==='true');
