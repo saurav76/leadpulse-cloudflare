@@ -48,6 +48,6 @@ jobs:
         run: |
           node --input-type=module -e 'import fs from "node:fs"; const p="wrangler.jsonc"; const x=fs.readFileSync(p,"utf8"); if(!x.includes("REPLACE_WITH_D1_DATABASE_UUID")) throw Error("Expected DB UUID placeholder absent"); fs.writeFileSync(p, x.replace("REPLACE_WITH_D1_DATABASE_UUID",process.env.LEADPULSE_D1_DATABASE_ID));'
       - name: Apply D1 migrations
-        run: npx wrangler d1 migrations apply leadpulse-db --remote --yes
+        run: npx wrangler d1 migrations apply leadpulse-db --remote
       - name: Deploy read-only preview
         run: npx wrangler deploy
