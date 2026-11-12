@@ -3,11 +3,11 @@ import {sha256,now} from './lib.js';
 export function registrationReady(env) {
  return !!(env.PREVIEW_ONLY!=='true' && env.ENABLE_SIGNUPS==='true' &&
   env.RESEND_API_KEY && env.EMAIL_FROM && env.PUBLIC_URL &&
-  env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY && env.AUTH_RATE_SECRET);
+  env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY && String(env.AUTH_RATE_SECRET||'').length>=24);
 }
 export function authReady(env) {
  return !!(env.PREVIEW_ONLY!=='true' && env.TURNSTILE_SITE_KEY &&
-  env.TURNSTILE_SECRET_KEY && env.AUTH_RATE_SECRET);
+  env.TURNSTILE_SECRET_KEY && String(env.AUTH_RATE_SECRET||'').length>=24);
 }
 export function turnstileWidget(env,action){
  if(!env.TURNSTILE_SITE_KEY || !/^[a-z]+$/.test(action))return '';
@@ -20,8 +20,8 @@ export async function verifyTurnstile(req,env,token,action,fetchImpl=fetch){
  try{
   const res=await fetchImpl('https://challenges.cloudflare.com/turnstile/v0/siteverify',{
    method:'POST',
-   headers:{'content-type':'application/json'},
-   body:JSON.stringify({secret:env.TURNSTILE_SECRET_KEY,response:token}),
+   headers:{'content-type':'application/x-www-form-urlencoded'},
+   body:new URLSearchParams({secret:env.TURNSTILE_SECRET_KEY,response:token}),
    signal:AbortSignal.timeout(8000)
   });
   if(!res.ok)return false;

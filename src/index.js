@@ -4,8 +4,10 @@ import {verifyOwnership,checkOne,scheduledCheck,sendEmail} from './monitor.js';
 import {safeAttribution,safeCampaign,tryTrackActivity,isAdminAuthorized,adminDenied,readCustomerOverview,renderGrowthPage} from './growth.js';
 import {verifyEmailMessage,welcomeEmailMessage} from './emailTemplates.js';
 import {requestPasswordReset,finishPasswordReset,recoveryAvailable} from './recovery.js';
+import {registrationReady,authReady,turnstileWidget,verifyTurnstile,rateLimit} from './launchSecurity.js';
+import {publicHostResolves} from './publicDns.js';
 const MAX_FORM=12000;
-const CSP="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+const CSP="default-src 'self'; style-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; img-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 function response(body,status=200,headers={}) {const h=new Headers({'Content-Type':'text/html; charset=utf-8','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Content-Security-Policy':CSP,'Strict-Transport-Security':'max-age=31536000','Cache-Control':'no-store'}); for(const [k,v] of new Headers(headers))h.append(k,v);return new Response(body,{status,headers:h});}
 function redirect(path,cookieHeaders){const h=new Headers({'Location':path,'Cache-Control':'no-store'});for(const item of cookieHeaders||[])h.append('Set-Cookie',item);return new Response(null,{status:303,headers:h});}
 function notFound(preview=true){return response(layout('Not found','<section class="inner page-intro"><h1>Page not found</h1><a href="/">Go home</a></section>',null,preview),404);}
@@ -29,8 +31,11 @@ async function sendVerification(env,email,token){
  return sendEmail(env,email,message.subject,message.text);
 }
 async function signup(req,env,f){
- if(env.PREVIEW_ONLY==='true'||env.ENABLE_SIGNUPS!=='true'||!env.RESEND_API_KEY||!env.EMAIL_FROM||!env.PUBLIC_URL)return response('Signup is not available until verified email delivery is configured.',503);
- checkPOST(req,f); const email=textField(f,'email',255).toLowerCase(),pw=String(f.get('password')||'');
+ if(!registrationReady(env))return response('Signup is not available until verified email delivery and abuse controls are configured.',503);
+ checkPOST(req,f);
+ if(!(await rateLimit(req,env,'signup',5)))return response('Too many attempts. Please try again later.',429);
+ if(!(await verifyTurnstile(req,env,textField(f,'cf-turnstile-response',2048),'signup')))return response('Challenge could not be verified. Refresh and retry.',400);
+ const email=textField(f,'email',255).toLowerCase(),pw=String(f.get('password')||'');
  if(!validEmail(email)||pw.length<12||pw.length>128)throw Error('Enter a valid email and a password of 12–128 characters.');
  const {salt,hash}=await hashPassword(pw);
  const token=randToken(),tokenHash=await sha256(token);
@@ -43,7 +48,11 @@ async function signup(req,env,f){
  return redirect('/login?registered=1');
 }
 async function login(req,env,f){
- checkPOST(req,f);const email=textField(f,'email',255).toLowerCase(),pw=String(f.get('password')||'');
+ if(!authReady(env))return response('Sign in is temporarily unavailable.',503);
+ checkPOST(req,f);
+ if(!(await rateLimit(req,env,'login',12,20)))return response('Too many sign-in attempts. Please try again later.',429);
+ if(!(await verifyTurnstile(req,env,textField(f,'cf-turnstile-response',2048),'login')))return response('Challenge could not be verified. Refresh and retry.',400);
+ const email=textField(f,'email',255).toLowerCase(),pw=String(f.get('password')||'');
  const user=await env.DB.prepare('SELECT * FROM users WHERE email=?').bind(email).first();
  // Never expose whether email exists. Set a sane PBKDF2 workload for unknown users.
  if(!user || !(await verifyPassword(pw,user.password_salt,user.password_hash)))throw Error('Invalid email or password.');
@@ -57,8 +66,16 @@ async function getSite(env,id,userId){return await env.DB.prepare('SELECT * FROM
 async function doPost(req,env,pathname,user){const f=await form(req);checkPOST(req,f);
  if(pathname==='/signup')return signup(req,env,f);
  if(pathname==='/login')return login(req,env,f);
- if(pathname==='/forgot-password')return makePage(req,env,'Password reset',formPage('Check your email',`<p>${e(await requestPasswordReset(env,textField(f,'email',255)))}</p><p><a href="/login">Return to login</a></p>`));
+ if(pathname==='/forgot-password'){
+   if(!authReady(env)||!recoveryAvailable(env))return response('Password recovery is not configured.',503);
+   if(!(await rateLimit(req,env,'recover',5)))return response('Too many requests. Please try again later.',429);
+   if(!(await verifyTurnstile(req,env,textField(f,'cf-turnstile-response',2048),'recover')))return response('Challenge could not be verified. Refresh and retry.',400);
+   return makePage(req,env,'Password reset',formPage('Check your email',`<p>${e(await requestPasswordReset(env,textField(f,'email',255)))}</p><p><a href="/login">Return to login</a></p>`));
+ }
  if(pathname==='/reset-password'){
+   if(!authReady(env))return response('Password recovery is not configured.',503);
+   if(!(await rateLimit(req,env,'recover',5)))return response('Too many requests. Please try again later.',429);
+   if(!(await verifyTurnstile(req,env,textField(f,'cf-turnstile-response',2048),'recover')))return response('Challenge could not be verified. Refresh and retry.',400);
    await finishPasswordReset(env,textField(f,'token',150),String(f.get('password')||''));
    return redirect('/login?reset=1');
  }
@@ -72,6 +89,7 @@ async function doPost(req,env,pathname,user){const f=await form(req);checkPOST(r
    if(!accessValid(user))throw Error('No active trial or paid period.');
    if(textField(f,'authorized')!=='yes')throw Error('Written authorization is required.');
    const url=publicUrl(textField(f,'url',600)), sites=await getSites(env,user.id);
+   if(!(await publicHostResolves(new URL(url).hostname)))throw Error('Public DNS verification failed for this website.');
    if(sites.length>=planLimit(user))throw Error('Your plan website limit has been reached.');
    await env.DB.prepare('INSERT INTO sites(user_id,url,verify_token,created_at) VALUES(?,?,?,?)').bind(user.id,url,randToken(24),now()).run();
    await tryTrackActivity(env,user.id,'website_added');
@@ -139,25 +157,29 @@ async function serve(req,env){
  if(path==='/privacy')return makePage(req,env,'Privacy',formPage('Privacy notice — draft','<p>LeadPulse stores account email addresses, hashed passwords, authorized site URLs, site verification status and check history in a Cloudflare D1 database. Email services and browser checks may process data as part of service delivery. Data retention, contact details and applicable legal obligations will be finalized before public signup.</p>'),user);
  if(path==='/terms')return makePage(req,env,'Terms',formPage('Terms — draft','<p>By requesting monitoring, you represent that you control or are expressly authorized to test the target website. The current preview does not offer uptime guarantees, checkout, or commercial service. Final legal terms and refund policies will be published before paid enrollment.</p>'),user);
  if(path==='/signup') {
+   if(!registrationReady(env))return response('Registration is not ready. Please return after email and security checks.',503);
    const token=getCookie(req,'lp_csrf')||randToken(24);
    const source=safeAttribution(u.searchParams.get('utm_source')),campaign=safeCampaign(u.searchParams.get('utm_campaign'));
-   const html=formPage('Create an account',`<p>Seven-day trial. No card required.</p><form method="post" action="/signup"><input type="hidden" name="source" value="${e(source)}"><input type="hidden" name="campaign" value="${e(campaign)}"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required autocomplete="email"><label>Password</label><input name="password" type="password" minlength="12" required autocomplete="new-password"><button class="btn btn-dark full">Create account</button></form>`);
+   const html=formPage('Create an account',`<p>Seven-day trial. No card required.</p><form method="post" action="/signup"><input type="hidden" name="source" value="${e(source)}"><input type="hidden" name="campaign" value="${e(campaign)}"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required autocomplete="email"><label>Password</label><input name="password" type="password" minlength="12" required autocomplete="new-password"><div class="auth-challenge">${turnstileWidget(env,'signup')}</div><button class="btn btn-dark full">Create account</button></form>`);
    const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Sign up',html,null,false),200,h);
  }
  if(path==='/forgot-password'){
+   if(!authReady(env)||!recoveryAvailable(env))return response('Password recovery is not configured.',503);
    const token=getCookie(req,'lp_csrf')||randToken(24);
-   const html=formPage('Reset your password',`<p>Enter the email registered to your LeadPulse account. If eligible, you'll receive a 30-minute recovery link.</p><form action="/forgot-password" method="post"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required><button class="btn btn-dark full">Send reset link</button></form>`);
+   const html=formPage('Reset your password',`<p>Enter the email registered to your LeadPulse account. If eligible, you'll receive a 30-minute recovery link.</p><form action="/forgot-password" method="post"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required><div class="auth-challenge">${turnstileWidget(env,'recover')}</div><button class="btn btn-dark full">Send reset link</button></form>`);
    const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Password recovery',html,null,false),200,h);
  }
  if(path==='/reset-password'){
+   if(!authReady(env))return response('Password recovery is not configured.',503);
    const token=getCookie(req,'lp_csrf')||randToken(24),key=u.searchParams.get('token')||'';
    if(key.length<30||key.length>150)return response('Invalid or expired recovery link',400);
-   const html=formPage('Choose a new password',`<form action="/reset-password" method="post"><input type="hidden" name="csrf" value="${e(token)}"><input type="hidden" name="token" value="${e(key)}"><label>New password (12–128 characters)</label><input name="password" type="password" minlength="12" maxlength="128" required autocomplete="new-password"><button class="btn btn-dark full">Reset password</button></form>`);
+   const html=formPage('Choose a new password',`<form action="/reset-password" method="post"><input type="hidden" name="csrf" value="${e(token)}"><input type="hidden" name="token" value="${e(key)}"><label>New password (12–128 characters)</label><input name="password" type="password" minlength="12" maxlength="128" required autocomplete="new-password"><div class="auth-challenge">${turnstileWidget(env,'recover')}</div><button class="btn btn-dark full">Reset password</button></form>`);
    const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Reset password',html,null,false),200,h);
  }
  if(path==='/login'){
+   if(!authReady(env))return response('Sign-in is not configured.',503);
    const token=getCookie(req,'lp_csrf')||randToken(24);
-   const html=formPage('Sign in',`${u.searchParams.has('registered')?'<p>Account created. Verify your email, then sign in.</p>':''}<form method="post" action="/login"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required autocomplete="email"><label>Password</label><input name="password" type="password" required autocomplete="current-password"><button class="btn btn-dark full">Sign in</button></form><p><a href="/forgot-password">Forgot password?</a></p>`);
+   const html=formPage('Sign in',`${u.searchParams.has('registered')?'<p>Account created. Verify your email, then sign in.</p>':''}<form method="post" action="/login"><input type="hidden" name="csrf" value="${e(token)}"><label>Email</label><input name="email" type="email" required autocomplete="email"><label>Password</label><input name="password" type="password" required autocomplete="current-password"><div class="auth-challenge">${turnstileWidget(env,'login')}</div><button class="btn btn-dark full">Sign in</button></form><p><a href="/forgot-password">Forgot password?</a></p>`);
    const h=new Headers();if(!getCookie(req,'lp_csrf'))h.append('Set-Cookie',cookie('lp_csrf',token,604800));return response(layout('Log in',html,null,false),200,h);
  }
  if(path==='/verify-email'){

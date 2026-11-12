@@ -1,4 +1,5 @@
 import {now,publicUrl} from './lib.js';
+import {publicHostResolves} from './publicDns.js';
 
 export function verifyTagInHtml(html,token) {
   // HTML can contain harmless whitespace or reversed attribute order.
@@ -11,6 +12,7 @@ export function verifyTagInHtml(html,token) {
 }
 export async function verifyOwnership(site,env) {
   const origin=new URL(publicUrl(site.url)).origin;
+  if(!(await publicHostResolves(new URL(origin).hostname)))return false;
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),10000);
   try {
@@ -22,6 +24,7 @@ export async function verifyOwnership(site,env) {
 }
 export async function browserPresenceCheck(site,env) {
   const url=publicUrl(site.url),expectedOrigin=new URL(url).origin;
+  if(!(await publicHostResolves(new URL(url).hostname)))return {status:'skipped',detail:'Domain did not pass public DNS security check.'};
   let browser, page;
   try {
     const {launch}=await import('@cloudflare/playwright');
@@ -72,7 +75,11 @@ export async function sendEmail(env,to,subject,text){
 export async function scheduledCheck(env){
  if(env.PREVIEW_ONLY==='true' || env.ENABLE_MONITORING!=='true') return {skipped:'Monitoring disabled'};
  const threshold=new Date(Date.now()-24*3600000).toISOString();
- const site=await env.DB.prepare(`SELECT s.*,u.email owner_email,u.verified,u.billing_status,u.trial_until,u.paid_until,u.plan FROM sites s JOIN users u ON u.id=s.user_id WHERE s.active=1 AND s.verified_at IS NOT NULL AND (s.last_checked IS NULL OR s.last_checked<?) ORDER BY COALESCE(s.last_checked,'') ASC LIMIT 1`).bind(threshold).first();
+ const site=await env.DB.prepare(`SELECT s.*,u.email owner_email,u.verified,u.billing_status,u.trial_until,u.paid_until,u.plan,u.paid_verified_at FROM sites s JOIN users u ON u.id=s.user_id
+ WHERE s.active=1 AND s.verified_at IS NOT NULL AND u.verified=1
+ AND (s.last_checked IS NULL OR s.last_checked<?)
+ AND ((u.billing_status='trial' AND u.trial_until>?) OR (u.billing_status='prepaid' AND u.paid_until>? AND u.paid_verified_at IS NOT NULL))
+ ORDER BY COALESCE(s.last_checked,'') ASC LIMIT 1`).bind(threshold,now(),now()).first();
  if(!site) return {skipped:'No due checks'};
  const {accessValid}=await import('./lib.js');
  if(!accessValid(site)) return {skipped:'No eligible customer in scheduling slot'};
