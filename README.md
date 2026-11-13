@@ -47,3 +47,9 @@ node --test tests/*.test.js
 - Select a legally supported merchant/payment provider; complete merchant onboarding, webhook verification, subscriptions and real payments in sandbox before production.
 
 **Status:** source ready for pilot preview; not a deployed or verified paid service. No private API keys belong in the repository.
+
+## Open source and contributions
+
+The code in this repository is available under the [MIT License](LICENSE). Contributions are welcome under the [contributing guide](CONTRIBUTING.md); report suspected vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+**Early-stage warning:** This is a pilot implementation, not a production-ready monitoring or billing service. Keep API tokens in deployment secrets, verify ownership of monitored websites, and complete the security and service-readiness gates above before accepting customer registrations or payments.
